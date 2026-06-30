@@ -1,7 +1,7 @@
 @echo off
 echo ========================================
 echo   SKYRIM STRING EXPORTER
-echo   XML -^> source.txt
+echo   XML -^> output/source.txt
 echo ========================================
 echo.
 cd /d "%~dp0"
@@ -10,4 +10,3 @@ echo.
 echo ========================================
 echo   EXPORT SELESAI
 echo ========================================
-pause

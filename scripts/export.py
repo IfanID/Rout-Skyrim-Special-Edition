@@ -1,40 +1,31 @@
 #!/usr/bin/env python3
 """
-Skyrim Strings Exporter — v3.2 (filter NPC + Item + Armor + Jewelry)
+Skyrim Strings Exporter — v3.3.2 (SKIP FILTER HANYA UNTUK NON-DIALOG)
 Extract strings dari XML Skyrim yang layak untuk diterjemahkan.
 Filter berdasarkan TRANSLATE_LIST dan daftar nama dari folder filters/.
+Semua file .py di filters/ akan dimuat otomatis.
 """
 
 import sys
 import re
 import os
 from pathlib import Path
+from collections import defaultdict
 
-# ============================================
-# Tambahkan path ke subfolder filters agar bisa diimport
-# ============================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 FILTERS_DIR = os.path.join(SCRIPT_DIR, 'filters')
-sys.path.insert(0, FILTERS_DIR)
+if os.path.exists(FILTERS_DIR):
+    sys.path.insert(0, FILTERS_DIR)
 
-# ============================================
-# DEFAULT PATHS
-# ============================================
 DEFAULT_INPUT = "input/Skyrim_english_english.xml"
 DEFAULT_OUTPUT = "output/source.txt"
 
-# ============================================
-# DAFTAR REC YANG BISA DITERJEMAHKAN (TRANSLATABLE)
-# ============================================
 TRANSLATABLE_LIST = {
     'DIAL:FULL', 'INFO:RNAM', 'MESG:FULL', 'MESG:ITXT', 'GMST:DATA',
     'QUST:NNAM', 'LSCR:DESC', 'PERK:EPFD', 'PERK:EPF2', 'MGEF:DNAM', 'REGN:RDMP',
     'BOOK:DESC', 'BOOK:CNAM', 'SCRL:DESC', 'ACTI:RNAM', 'FLOR:RNAM', 'WOOP:TNAM', 'BPTD:BPTN',
 }
 
-# ============================================
-# DAFTAR REC YANG DI-SKIP
-# ============================================
 SKIP_LIST = {
     'CELL:FULL', 'LCTN:FULL', 'WRLD:FULL', 'REFR:FULL',
     'NPC_:FULL', 'NPC_:SHRT', 'RACE:FULL', 'EYES:FULL', 'HDPT:FULL', 'CLAS:FULL',
@@ -48,61 +39,53 @@ SKIP_LIST = {
     'QUST:FULL', 'PERK:FULL', 'AVIF:FULL', 'CLFM:FULL', 'SNCT:FULL',
 }
 
-# ============================================
-# GMST:DATA Filter
-# ============================================
 GMST_SKIP_PATTERNS = [
-    r'^\s*[-+]?\d+(\.\d+)?\s*$',    # Angka murni
-    r'^[a-zA-Z_][a-zA-Z0-9_]*$',     # EditorID
-    r'^\s*$',                         # Kosong
-    r'^[A-Z][a-z]+[A-Z]',            # CamelCase murni
+    r'^\s*[-+]?\d+(\.\d+)?\s*$',
+    r'^[a-zA-Z_][a-zA-Z0-9_]*$',
+    r'^\s*$',
+    r'^[A-Z][a-z]+[A-Z]',
 ]
 
-# ============================================
-# Muat semua filter dari folder filters/
-# ============================================
-def load_filter(module_name, attr_name='NAMES'):
-    """Muat daftar dari modul filter, return list kosong jika gagal."""
-    try:
-        mod = __import__(module_name)
-        names = getattr(mod, attr_name, [])
-        if isinstance(names, list):
-            return names
-        return []
-    except ImportError:
-        return []
+# REC yang TIDAK BOLEH di-skip filter nama (dialog/narasi)
+NO_FILTER_SKIP_REC = {'DIAL:FULL', 'INFO:RNAM', 'MESG:FULL', 'BOOK:DESC'}
 
-# Load semua filter
-NPC_NAMES = load_filter('npc', 'NPC_NAMES')
-ITEM_NAMES = load_filter('items', 'ITEM_NAMES')
-ARMOR_NAMES = load_filter('armor', 'ARMOR_NAMES')
-JEWELRY_NAMES = load_filter('jewelry', 'JEWELRY_NAMES')
+def auto_load_filters(filters_dir):
+    filter_dict = defaultdict(list)
+    if not os.path.isdir(filters_dir):
+        return filter_dict
+    py_files = [f for f in os.listdir(filters_dir) if f.endswith('.py') and f != '__init__.py']
+    for py_file in py_files:
+        module_name = py_file[:-3]
+        try:
+            mod = __import__(module_name)
+            for attr_name in dir(mod):
+                if attr_name.endswith('_NAMES'):
+                    val = getattr(mod, attr_name)
+                    if isinstance(val, list):
+                        category = attr_name.replace('_NAMES', '').upper()
+                        filter_dict[category].extend(val)
+        except ImportError:
+            pass
+    return filter_dict
 
-# ============================================
-# Buat pola regex untuk masing-masing filter
-# ============================================
-def build_pattern(names):
-    if not names:
-        return None
-    escaped = [re.escape(name) for name in names]
-    return re.compile(r'\b(?:' + '|'.join(escaped) + r')\b', re.IGNORECASE)
+FILTERS = auto_load_filters(FILTERS_DIR)
 
-npc_pattern = build_pattern(NPC_NAMES)
-item_pattern = build_pattern(ITEM_NAMES)
-armor_pattern = build_pattern(ARMOR_NAMES)
-jewelry_pattern = build_pattern(JEWELRY_NAMES)
+patterns = {}
+for category, names in FILTERS.items():
+    if names:
+        escaped = [re.escape(name) for name in names]
+        patterns[category] = re.compile(r'\b(?:' + '|'.join(escaped) + r')\b', re.IGNORECASE)
+    else:
+        patterns[category] = None
 
-# Tampilkan info
-print("ℹ️  Memuat filter dari folder 'filters/'...")
-print(f"   NPC filter    : {len(NPC_NAMES) if NPC_NAMES else 0} nama")
-print(f"   Item filter   : {len(ITEM_NAMES) if ITEM_NAMES else 0} nama")
-print(f"   Armor filter  : {len(ARMOR_NAMES) if ARMOR_NAMES else 0} nama")
-print(f"   Jewelry filter: {len(JEWELRY_NAMES) if JEWELRY_NAMES else 0} nama")
+print("ℹ️  Memuat filter dari folder 'filters/' secara otomatis...")
+if FILTERS:
+    for category, names in FILTERS.items():
+        print(f"   {category:12s}: {len(names):,} nama")
+else:
+    print("   (tidak ada filter ditemukan)")
 print()
 
-# ============================================
-# Fungsi filter
-# ============================================
 def is_gmst_translatable(text):
     if not text or not text.strip():
         return False
@@ -122,14 +105,6 @@ def is_translatable(rec_val, source_text=""):
         return False
     return False
 
-def contains_any(text, pattern):
-    if not pattern or not text:
-        return False
-    return bool(pattern.search(text))
-
-# ============================================
-# Main
-# ============================================
 def main():
     if len(sys.argv) == 1:
         input_file = DEFAULT_INPUT
@@ -169,7 +144,7 @@ def main():
 
     print(f"✓ Ditemukan {len(matches):,} <String> blocks\n")
     print("=" * 80)
-    print("  SKYRIM STRINGS EXPORTER v3.2 (filter NPC + Item + Armor + Jewelry)")
+    print("  SKYRIM STRINGS EXPORTER v3.3.2 (skip filter hanya non-dialog)")
     print("=" * 80)
     print(f"  Total input strings : {len(matches):,}")
     print("-" * 80)
@@ -180,11 +155,9 @@ def main():
         'exported': 0,
         'skipped_proper_noun': 0,
         'skipped_gmst_filter': 0,
-        'skipped_npc': 0,
-        'skipped_item': 0,
-        'skipped_armor': 0,
-        'skipped_jewelry': 0,
     }
+    for category in FILTERS:
+        stats[f'skipped_{category.lower()}'] = 0
 
     for i, match in enumerate(matches):
         sid = match.group(1)
@@ -192,64 +165,39 @@ def main():
         source_text = match.group(4).strip()
         dest_text = match.group(5).strip()
 
-        # Unescape
         source_text = (source_text
-            .replace('&lt;', '<')
-            .replace('&gt;', '>')
-            .replace('&amp;', '&')
-            .replace('&quot;', '"')
-            .replace('&apos;', "'"))
+            .replace('&lt;', '<').replace('&gt;', '>')
+            .replace('&amp;', '&').replace('&quot;', '"').replace('&apos;', "'"))
         dest_text = (dest_text
-            .replace('&lt;', '<')
-            .replace('&gt;', '>')
-            .replace('&amp;', '&')
-            .replace('&quot;', '"')
-            .replace('&apos;', "'"))
+            .replace('&lt;', '<').replace('&gt;', '>')
+            .replace('&amp;', '&').replace('&quot;', '"').replace('&apos;', "'"))
 
-        # Filter REC
         if not is_translatable(rec_val, source_text):
             if rec_val in SKIP_LIST:
                 stats['skipped_proper_noun'] += 1
-                reason = "PROPER NOUN"
             elif rec_val == 'GMST:DATA':
                 stats['skipped_gmst_filter'] += 1
-                reason = "GMST FILTER"
             else:
                 stats['skipped_proper_noun'] += 1
-                reason = "NOT IN LIST"
             if i % 100 == 0 or i == len(matches)-1:
-                print(f"[{i+1:5d}/{len(matches)}] [SKIP] {rec_val:15s} | {reason}")
+                print(f"[{i+1:5d}/{len(matches)}] [SKIP] {rec_val:15s}")
             continue
 
-        # Filter NPC
-        if contains_any(source_text, npc_pattern):
-            stats['skipped_npc'] += 1
+        # Deteksi filter hanya untuk statistik dan skip selektif
+        skipped = False
+        for category, pattern in patterns.items():
+            if pattern and pattern.search(source_text):
+                stats[f'skipped_{category.lower()}'] += 1
+                skipped = True
+                break
+
+        # Skip hanya jika bukan dialog/narasi
+        if skipped and rec_val not in NO_FILTER_SKIP_REC:
             if i % 100 == 0 or i == len(matches)-1:
-                print(f"[{i+1:5d}/{len(matches)}] [SKIP] {rec_val:15s} | NPC NAME")
+                print(f"[{i+1:5d}/{len(matches)}] [SKIP] {rec_val:15s} | FILTER")
             continue
 
-        # Filter Item
-        if contains_any(source_text, item_pattern):
-            stats['skipped_item'] += 1
-            if i % 100 == 0 or i == len(matches)-1:
-                print(f"[{i+1:5d}/{len(matches)}] [SKIP] {rec_val:15s} | ITEM NAME")
-            continue
-
-        # Filter Armor
-        if contains_any(source_text, armor_pattern):
-            stats['skipped_armor'] += 1
-            if i % 100 == 0 or i == len(matches)-1:
-                print(f"[{i+1:5d}/{len(matches)}] [SKIP] {rec_val:15s} | ARMOR NAME")
-            continue
-
-        # Filter Jewelry
-        if contains_any(source_text, jewelry_pattern):
-            stats['skipped_jewelry'] += 1
-            if i % 100 == 0 or i == len(matches)-1:
-                print(f"[{i+1:5d}/{len(matches)}] [SKIP] {rec_val:15s} | JEWELRY NAME")
-            continue
-
-        # Export
+        # Jika sampai sini, string diekspor
         output_lines.append('-')
         output_lines.append(f'sID="{sid}"')
         output_lines.append(f'<REC>{rec_val}</REC>')
@@ -262,7 +210,6 @@ def main():
         if i % 100 == 0 or i == len(matches)-1:
             print(f"[{i+1:5d}/{len(matches)}] [OK]   {rec_val:15s} | Exported: {stats['exported']:,}")
 
-    # Tulis output
     print("\n" + "=" * 80)
     print(f"  Menulis {stats['exported']:,} strings ke {output_file}...")
     print("=" * 80)
@@ -274,7 +221,6 @@ def main():
         print(f"❌ Error: {e}")
         sys.exit(1)
 
-    # Statistik
     print("\n" + "=" * 80)
     print("  STATISTIK EXPORT")
     print("=" * 80)
@@ -282,10 +228,10 @@ def main():
     print(f"  ✓ Di-export (translatable): {stats['exported']:,}")
     print(f"  ✗ Skip (proper noun)      : {stats['skipped_proper_noun']:,}")
     print(f"  ✗ Skip (GMST filter)      : {stats['skipped_gmst_filter']:,}")
-    print(f"  ✗ Skip (NPC name)         : {stats['skipped_npc']:,}")
-    print(f"  ✗ Skip (Item name)        : {stats['skipped_item']:,}")
-    print(f"  ✗ Skip (Armor name)       : {stats['skipped_armor']:,}")
-    print(f"  ✗ Skip (Jewelry name)     : {stats['skipped_jewelry']:,}")
+    for category in FILTERS:
+        key = f'skipped_{category.lower()}'
+        if key in stats:
+            print(f"  📊 String mengandung {category:12s}: {stats[key]:,} (hanya non-dialog yang diskip)")
     print("-" * 80)
     export_rate = (stats['exported'] / stats['total'] * 100) if stats['total'] > 0 else 0
     print(f"  Export rate: {export_rate:.1f}%")

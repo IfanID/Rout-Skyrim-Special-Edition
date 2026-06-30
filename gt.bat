@@ -26,4 +26,3 @@ if "%~2"=="" (
     python scripts\ganti.py "%~1" "%~2"
 )
 echo.
-pause

@@ -13,8 +13,8 @@ import re
 import os
 
 DEFAULT_INPUT_XML = "input/Skyrim_english_english.xml"
-DEFAULT_SOURCE_TXT = "output/source_translated.txt"
-DEFAULT_OUTPUT_XML = "output/Skyrim_english_english_translated.xml"
+DEFAULT_SOURCE_TXT = "translated/source_translated.txt"
+DEFAULT_OUTPUT_XML = "final/Skyrim_english_english.xml"
 DEFAULT_REPORT_TXT = "output/laporan.txt"
 
 def xml_escape(text):

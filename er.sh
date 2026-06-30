@@ -1,16 +1,12 @@
-cat > er.sh << 'EOF'
-#!/bin/zsh
+#!/bin/bash
+cd "$(dirname "$0")"
 echo "========================================"
 echo "  SKYRIM REC EXTRACTOR"
-echo "  XML -> rec.txt"
+echo "  XML -> output/rec.txt"
 echo "========================================"
-echo
-cd "$(dirname "$0")"
-python scripts/extract_rec.py
-echo
+echo ""
+python3 scripts/extract_rec.py
+echo ""
 echo "========================================"
 echo "  EXTRACT REC SELESAI"
 echo "========================================"
-echo -n "Tekan Enter untuk melanjutkan..."
-read
-EOF

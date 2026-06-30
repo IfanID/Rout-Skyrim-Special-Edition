@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 """
-Skyrim Strings Translator v7.5 — CLEAN SPINNER + CHECKPOINT INFO + FILTER INTEGRATION
+Skyrim Strings Translator v7.7 — STATISTIK FILTER + AUTO-DETECT + CHECKPOINT
 Translate source.txt ke Bahasa Indonesia.
 
 Features:
-- BACKGROUND SAVE: Auto-save setiap 10 detik (anti-lag)
-- ATOMIC WRITE: Anti-corrupt saat mati lampu / Ctrl+C
-- BATCH 100: Cepat + Auto-Fallback ke 50/25/1 jika limit, lalu naik balik otomatis
-- Resume otomatis dari checkpoint terakhir
-- ANIMASI LOADING: Spinner + overall progress + elapsed time (TANPA progress bar batch)
-- INFO CHECKPOINT LENGKAP saat Ctrl+C
-- PROPER NOUN: Menggabungkan daftar dari filters/npc.py, items.py, armor.py, jewelry.py
-
-Usage:
-  python translate.py                                            # Default paths
-  python translate.py output/source.txt output/translated.txt   # Custom paths
+- BACKGROUND SAVE: Auto-save setiap 10 detik
+- ATOMIC WRITE: Anti-corrupt
+- BATCH 100: Dynamic fallback
+- Resume dari checkpoint
+- ANIMASI SPINNER
+- STATISTIK FILTER per kategori saat selesai / Ctrl+C
+- PROPER NOUN: Otomatis dari folder filters/
 """
 
 import sys
@@ -23,28 +19,20 @@ import time
 import json
 import os
 import threading
+from collections import defaultdict
 from deep_translator import GoogleTranslator
 
-# ============================================
-# Tambahkan path ke subfolder filters
 # ============================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 FILTERS_DIR = os.path.join(SCRIPT_DIR, 'filters')
 if os.path.exists(FILTERS_DIR):
     sys.path.insert(0, FILTERS_DIR)
 
-# ============================================
-# DEFAULT PATHS
-# ============================================
 DEFAULT_INPUT = "output/source.txt"
-DEFAULT_OUTPUT = "output/source_translated.txt"
+DEFAULT_OUTPUT = "translated/source_translated.txt"
 CHECKPOINT_DIR = "cache"
 CHECKPOINT_FILE = "source_checkpoint.json"
 
-# ============================================
-# DAFTAR PROPER NOUN SKYRIM (MANUAL + DARI FILTER)
-# ============================================
-# Daftar manual awal
 BASE_PROPER_NOUNS = [
     "Whiterun", "Dragonsreach", "Windhelm", "Solitude", "Markarth",
     "Riften", "Falkreath", "Morthal", "Dawnstar", "Winterhold",
@@ -117,40 +105,54 @@ BASE_PROPER_NOUNS = [
     "Tel Mithryn",
 ]
 
-# Muat daftar dari filters/ (jika ada)
-filter_names = []
-try:
-    from npc import NPC_NAMES
-    filter_names.extend(NPC_NAMES)
-except ImportError:
-    pass
-try:
-    from items import ITEM_NAMES
-    filter_names.extend(ITEM_NAMES)
-except ImportError:
-    pass
-try:
-    from armor import ARMOR_NAMES
-    filter_names.extend(ARMOR_NAMES)
-except ImportError:
-    pass
-try:
-    from jewelry import JEWELRY_NAMES
-    filter_names.extend(JEWELRY_NAMES)
-except ImportError:
-    pass
+# ============================================
+# AUTO-DETECT FILTERS
+# ============================================
+def auto_load_filters(filters_dir):
+    filter_dict = defaultdict(list)
+    if not os.path.isdir(filters_dir):
+        return filter_dict, []
+    py_files = [f for f in os.listdir(filters_dir) if f.endswith('.py') and f != '__init__.py']
+    for py_file in py_files:
+        module_name = py_file[:-3]
+        try:
+            mod = __import__(module_name)
+            for attr_name in dir(mod):
+                if attr_name.endswith('_NAMES'):
+                    val = getattr(mod, attr_name)
+                    if isinstance(val, list):
+                        category = attr_name.replace('_NAMES', '').upper()
+                        filter_dict[category].extend(val)
+        except ImportError:
+            pass
+    all_names = []
+    for names in filter_dict.values():
+        all_names.extend(names)
+    return filter_dict, all_names
 
-# Gabungkan dengan manual, hilangkan duplikat, urutkan dari terpanjang
+filter_categories, filter_names = auto_load_filters(FILTERS_DIR)
+
+# Gabungkan manual + filter
 combined = set(BASE_PROPER_NOUNS) | set(filter_names)
 SKYRIM_PROPER_NOUNS = sorted(combined, key=len, reverse=True)
 
-# Tampilkan info
-print(f"ℹ️  Memuat proper noun dari filters/...")
-print(f"   Total proper noun: {len(SKYRIM_PROPER_NOUNS):,} kata")
+# Bangun pola regex per kategori (untuk statistik)
+category_patterns = {}
+for cat, names in filter_categories.items():
+    if names:
+        escaped = [re.escape(n) for n in names]
+        category_patterns[cat] = re.compile(r'\b(?:' + '|'.join(escaped) + r')\b', re.IGNORECASE)
 
-# ============================================
-# Fungsi proteksi
-# ============================================
+# Tampilkan info filter
+print("ℹ️  Memuat proper noun dari filters/...")
+if filter_categories:
+    for cat, names in filter_categories.items():
+        print(f"   {cat} filter     : {len(names):,} nama")
+else:
+    print("   (tidak ada filter ditemukan)")
+print(f"   Total proper noun (gabungan manual+filter): {len(SKYRIM_PROPER_NOUNS):,} kata")
+print()
+
 def protect_proper_nouns(text):
     found = []
     modified = text
@@ -167,9 +169,6 @@ def restore_proper_nouns(text, nouns):
         text = re.sub(r'\[\[PN' + str(i) + r'\]\]', noun, text)
     return text
 
-# ============================================
-# Parser, Checkpoint, dan lainnya (tidak berubah)
-# ============================================
 def parse_source_file(file_path):
     entries = []
     try:
@@ -178,28 +177,26 @@ def parse_source_file(file_path):
     except Exception as e:
         print(f"❌ Error membaca file: {e}")
         return entries
-    
     blocks = content.split('\n-\n')
     for block in blocks:
         block = block.strip()
-        if not block or block == '-':
-            continue
+        if not block or block == '-': continue
         lines = block.split('\n')
         entry = {}
         for line in lines:
             line = line.strip()
             if line.startswith('sID='):
-                match = re.search(r'sID="([^"]*)"', line)
-                if match: entry['sid'] = match.group(1)
+                m = re.search(r'sID="([^"]*)"', line)
+                if m: entry['sid'] = m.group(1)
             elif line.startswith('<REC>'):
-                match = re.search(r'<REC>([^<]*)</REC>', line)
-                if match: entry['rec'] = match.group(1).strip()
+                m = re.search(r'<REC>([^<]*)</REC>', line)
+                if m: entry['rec'] = m.group(1).strip()
             elif line.startswith('<Source>'):
-                match = re.search(r'<Source>(.*?)</Source>', line)
-                if match: entry['source'] = match.group(1)
+                m = re.search(r'<Source>(.*?)</Source>', line)
+                if m: entry['source'] = m.group(1)
             elif line.startswith('<Dest>'):
-                match = re.search(r'<Dest>(.*?)</Dest>', line)
-                if match: entry['dest'] = match.group(1)
+                m = re.search(r'<Dest>(.*?)</Dest>', line)
+                if m: entry['dest'] = m.group(1)
         if all(k in entry for k in ['sid', 'rec', 'source', 'dest']):
             entries.append(entry)
     return entries
@@ -209,8 +206,7 @@ def load_checkpoint(checkpoint_file):
     try:
         with open(checkpoint_file, 'r', encoding='utf-8') as f:
             return json.load(f)
-    except Exception as e:
-        print(f"⚠️  Warning: Gagal load checkpoint: {e}")
+    except:
         return None
 
 def atomic_save_checkpoint(data, checkpoint_file):
@@ -219,7 +215,7 @@ def atomic_save_checkpoint(data, checkpoint_file):
         with open(temp_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(temp_file, checkpoint_file)
-    except Exception:
+    except:
         pass
 
 def background_auto_saver(translated_entries, checkpoint_file, stop_event):
@@ -240,7 +236,6 @@ class Spinner:
         self.batch_size = 0
         self.overall_progress = 0
         self.batch_start_time = 0
-    
     def _spin(self):
         while self.running:
             spin_char = self.spinner_chars[self.idx % len(self.spinner_chars)]
@@ -252,7 +247,6 @@ class Spinner:
             self.last_line_len = len(line)
             self.idx += 1
             time.sleep(0.1)
-    
     def start(self, batch_size, overall_progress):
         self.batch_size = batch_size
         self.overall_progress = overall_progress
@@ -261,7 +255,6 @@ class Spinner:
         self.thread = threading.Thread(target=self._spin)
         self.thread.daemon = True
         self.thread.start()
-    
     def stop(self, message=None):
         self.running = False
         if self.thread:
@@ -273,8 +266,7 @@ class Spinner:
         self.last_line_len = 0
 
 def format_time(seconds):
-    if seconds < 60:
-        return f"{seconds:.1f}s"
+    if seconds < 60: return f"{seconds:.1f}s"
     elif seconds < 3600:
         m, s = divmod(seconds, 60)
         return f"{int(m)}m {int(s)}s"
@@ -283,9 +275,29 @@ def format_time(seconds):
         m, s = divmod(r, 60)
         return f"{int(h)}h {int(m)}m {int(s)}s"
 
-# ============================================
-# MAIN
-# ============================================
+def print_statistics(stats, start_idx, elapsed, title="STATISTIK TERJEMAHAN"):
+    print("=" * 80)
+    print(f"  {title}")
+    print("=" * 80)
+    print(f"  Total entries          : {stats['total']:,}")
+    print(f"  ✓ Diterjemahkan        : {stats['translated']:,}")
+    print(f"  ✗ Fallback (English)   : {stats['fallback']:,}")
+    if stats['translated'] > start_idx:
+        entries_done = stats['translated'] - start_idx
+        rate = entries_done / elapsed if elapsed > 0 else 0
+        print(f"  ⏱️  Waktu                : {format_time(elapsed)}")
+        print(f"  ⚡ Kecepatan rata-rata  : {rate:.1f} string/detik")
+    # Statistik filter
+    if stats.get('filter_hits'):
+        print("-" * 40)
+        print("  STRING DENGAN PROPER NOUN (per kategori):")
+        for cat, count in sorted(stats['filter_hits'].items()):
+            print(f"  • {cat:12s}: {count:,}")
+    print("-" * 80)
+    success_rate = (stats['translated'] / stats['total'] * 100) if stats['total'] > 0 else 0
+    print(f"  Success rate: {success_rate:.1f}%")
+    print("=" * 80)
+
 def main():
     if len(sys.argv) == 1:
         input_file = DEFAULT_INPUT
@@ -298,15 +310,11 @@ def main():
         input_file = sys.argv[1]
         output_file = sys.argv[2]
     else:
-        print("Usage:")
-        print("  python translate.py                                        # Default paths")
-        print("  python translate.py <source.txt> <source_translated.txt>   # Custom paths")
-        print()
+        print("Usage: python translate.py [source.txt] [source_translated.txt]")
         sys.exit(1)
     
     output_dir = os.path.dirname(output_file)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
+    if output_dir: os.makedirs(output_dir, exist_ok=True)
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     checkpoint_file = os.path.join(CHECKPOINT_DIR, CHECKPOINT_FILE)
     
@@ -332,29 +340,33 @@ def main():
         print("🆕 Tidak ada checkpoint, mulai dari awal")
         translated_entries = []
     
+    # Inisialisasi statistik, termasuk filter_hits
+    stats = {
+        'total': len(entries),
+        'translated': start_idx,
+        'fallback': 0,
+        'filter_hits': defaultdict(int)
+    }
+    # Jika resume, kita tidak bisa menghitung ulang filter_hits dari awal, jadi kosong saja
+    # (hanya menghitung dari string yang diproses sekarang)
+    
     print()
     print("=" * 80)
-    print("  SKYRIM STRINGS TRANSLATOR v7.5 (dengan filter NPC/Item/Armor/Jewelry)")
+    print("  SKYRIM STRINGS TRANSLATOR v7.7 (auto-detect filters)")
     print("=" * 80)
     print(f"  Total entries          : {len(entries):,}")
     print(f"  Sudah diterjemahkan    : {start_idx:,}")
     print(f"  Sisa                   : {len(entries) - start_idx:,}")
-    print(f"  Proper noun protection : {len(SKYRIM_PROPER_NOUNS):,} kata (termasuk dari filters/)")
-    print(f"  Animasi loading        : AKTIF")
+    print(f"  Proper noun protection : {len(SKYRIM_PROPER_NOUNS):,} kata")
     print("-" * 80)
     print()
     
     stop_event = threading.Event()
-    saver_thread = threading.Thread(
-        target=background_auto_saver,
-        args=(translated_entries, checkpoint_file, stop_event),
-        daemon=True
-    )
+    saver_thread = threading.Thread(target=background_auto_saver, args=(translated_entries, checkpoint_file, stop_event), daemon=True)
     saver_thread.start()
     
     translator = GoogleTranslator(source='auto', target='id')
     BATCH_MAX_SIZE = 100
-    stats = {'total': len(entries), 'translated': start_idx}
     idx = start_idx
     current_batch_size = BATCH_MAX_SIZE
     batch_number = 0
@@ -368,6 +380,10 @@ def main():
             batch_nouns = []
             for entry in batch:
                 source = entry['source']
+                # Hitung filter hit per kategori
+                for cat, pattern in category_patterns.items():
+                    if pattern.search(source):
+                        stats['filter_hits'][cat] += 1
                 protected, nouns = protect_proper_nouns(source)
                 batch_texts.append(protected)
                 batch_nouns.append(nouns)
@@ -394,13 +410,13 @@ def main():
                 if current_batch_size > 1:
                     translated_texts = translator.translate_batch(batch_texts)
                     if not translated_texts or len(translated_texts) != len(batch_texts):
-                        raise Exception("Batch result invalid/None")
+                        raise Exception("Invalid")
                 else:
                     res = translator.translate(batch_texts[0])
                     translated_texts = [res if res else batch_texts[0]]
                 
                 batch_elapsed = time.time() - batch_start_time
-                spinner.stop(f"  ✅ Batch #{batch_number} selesai dalam {format_time(batch_elapsed)} | {len(batch)} string diterjemahkan")
+                spinner.stop(f"  ✅ Batch #{batch_number} selesai dalam {format_time(batch_elapsed)} | {len(batch)} string")
                 
                 for i, (entry, translated, nouns) in enumerate(zip(batch, translated_texts, batch_nouns)):
                     if translated is None:
@@ -419,7 +435,7 @@ def main():
                 if current_batch_size < BATCH_MAX_SIZE:
                     old_batch = current_batch_size
                     current_batch_size = min(BATCH_MAX_SIZE, current_batch_size * 2)
-                    print(f"📈 AUTO-RECOVER: Batch {old_batch} → {current_batch_size} (kecepatan ditingkatkan)")
+                    print(f"📈 AUTO-RECOVER: Batch {old_batch} → {current_batch_size}")
                 
                 idx += len(batch)
                 time.sleep(0.5)
@@ -429,15 +445,16 @@ def main():
                 if current_batch_size > 1:
                     old_batch = current_batch_size
                     current_batch_size = max(1, current_batch_size // 2)
-                    print(f"📉 AUTO-FALLBACK: Batch {old_batch} → {current_batch_size} (kecepatan diturunkan)")
+                    print(f"📉 AUTO-FALLBACK: Batch {old_batch} → {current_batch_size}")
                     time.sleep(1)
                 else:
-                    print(f"💡 FALLBACK: Menggunakan teks asli (English) untuk {len(batch)} string")
+                    print(f"💡 FALLBACK: Menggunakan teks asli untuk {len(batch)} string")
                     for i, (entry, nouns) in enumerate(zip(batch, batch_nouns)):
                         result = restore_proper_nouns(batch_texts[i], nouns)
                         entry['dest'] = result
                         translated_entries.append(entry)
                         stats['translated'] += 1
+                        stats['fallback'] += 1
                         current = idx + i + 1
                         progress = (current / len(entries)) * 100
                         print(f"[{current:6d}/{len(entries)}] {progress:5.1f}% | FALLBACK (EN) | {entry['source'][:50]}...")
@@ -445,7 +462,8 @@ def main():
                     time.sleep(1)
 
     except KeyboardInterrupt:
-        print("\n")
+        spinner.stop("  ⏹️  Dihentikan oleh user")
+        print()
         print("=" * 80)
         print("  🛑 DIHENTIKAN OLEH USER (Ctrl+C)")
         print("=" * 80)
@@ -454,8 +472,9 @@ def main():
             print(f"  💾 Checkpoint tersimpan : {len(translated_entries):,} entries")
             print(f"  📁 Lokasi checkpoint    : {checkpoint_file}")
         print(f"  📊 Progress terakhir    : {stats['translated']:,}/{stats['total']:,} ({stats['translated']/stats['total']*100:.1f}%)")
-        print("=" * 80)
-        print("  🔄 Jalankan ulang tl.bat untuk melanjutkan")
+        elapsed = time.time() - start_time
+        print_statistics(stats, start_idx, elapsed, title="STATISTIK SEMENTARA")
+        print("\n  🔄 Jalankan ulang tl.bat untuk melanjutkan")
         print("=" * 80)
         stop_event.set()
         saver_thread.join(timeout=3)
@@ -465,7 +484,6 @@ def main():
         print(f"\n[!] Fatal Error: {e}")
         if len(translated_entries) > 0:
             atomic_save_checkpoint(translated_entries, checkpoint_file)
-            print(f"💾 Checkpoint tersimpan: {len(translated_entries):,} entries")
         stop_event.set()
         saver_thread.join(timeout=3)
         sys.exit(1)
@@ -495,26 +513,13 @@ def main():
         print(f"✓ File tersimpan: {output_file}")
         if os.path.exists(checkpoint_file):
             os.remove(checkpoint_file)
-            print(f"🗑️  Checkpoint dibersihkan (terjemahan selesai)")
+            print(f"🗑️  Checkpoint dibersihkan")
     except Exception as e:
-        print(f"❌ Error menulis file: {e}")
+        print(f"❌ Error: {e}")
         sys.exit(1)
     
     print()
-    print("=" * 80)
-    print("  STATISTIK TERJEMAHAN")
-    print("=" * 80)
-    print(f"  Total entries          : {stats['total']:,}")
-    print(f"  ✓ Diterjemahkan        : {stats['translated']:,}")
-    print(f"  ⏱️  Total waktu         : {format_time(total_time)}")
-    if stats['translated'] > start_idx:
-        entries_done = stats['translated'] - start_idx
-        rate = entries_done / total_time if total_time > 0 else 0
-        print(f"  ⚡ Kecepatan rata-rata  : {rate:.1f} string/detik")
-    print("-" * 80)
-    success_rate = (stats['translated'] / stats['total'] * 100) if stats['total'] > 0 else 0
-    print(f"  Success rate: {success_rate:.1f}%")
-    print("=" * 80)
+    print_statistics(stats, start_idx, total_time)
     print()
     print("  ✓ Langkah selanjutnya: jalankan im.bat untuk import ke XML")
     print("=" * 80)

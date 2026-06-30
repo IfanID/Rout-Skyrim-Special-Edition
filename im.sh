@@ -1,16 +1,12 @@
-cat > im.sh << 'EOF'
-#!/bin/zsh
+#!/bin/bash
+cd "$(dirname "$0")"
 echo "========================================"
 echo "  SKYRIM STRING IMPORTER"
-echo "  source_translated.txt -> XML"
+echo "  translated/source_translated.txt -> final/Skyrim_english_english.xml"
 echo "========================================"
-echo
-cd "$(dirname "$0")"
-python scripts/import.py
-echo
+echo ""
+python3 scripts/import.py
+echo ""
 echo "========================================"
 echo "  IMPORT SELESAI"
 echo "========================================"
-echo -n "Tekan Enter untuk melanjutkan..."
-read
-EOF
